@@ -16,4 +16,6 @@ public class NetworkEvent {
     public long startTime;
     public long duration;
 
+    public String sessionId;
+
 }
