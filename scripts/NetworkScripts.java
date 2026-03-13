@@ -9,10 +9,16 @@ public static final String INTERCEPTOR_SCRIPT =
 + "window.__networkLogs=[];"
 + "window.__networkIgnorePatterns=[];"
 + "window.__networkAllowPatterns=[];"
++ "window.__networkSessionId=null;"
 
-+ "function log(e){window.__networkLogs.push(e);}"
++ "function log(e){"
++ "if(window.__networkSessionId){"
++ "e.sessionId=window.__networkSessionId;"
++ "}"
++ "window.__networkLogs.push(e);"
++ "}"
 
-// filter logic
+// filtering
 + "function shouldIgnore(url){"
 + "var ignore=window.__networkIgnorePatterns||[];"
 + "var allow=window.__networkAllowPatterns||[];"
@@ -34,7 +40,7 @@ public static final String INTERCEPTOR_SCRIPT =
 + "return obj;"
 + "}"
 
-// FETCH INTERCEPTOR
+// FETCH interceptor
 + "const originalFetch=window.fetch;"
 + "window.fetch=async function(...args){"
 
@@ -68,7 +74,7 @@ public static final String INTERCEPTOR_SCRIPT =
 + "return resp;"
 + "};"
 
-// XHR INTERCEPTOR
+// XHR interceptor
 + "const open=XMLHttpRequest.prototype.open;"
 + "const send=XMLHttpRequest.prototype.send;"
 + "const setHeader=XMLHttpRequest.prototype.setRequestHeader;"
