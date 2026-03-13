@@ -18,7 +18,7 @@ public static final String INTERCEPTOR_SCRIPT =
 + "window.__networkLogs.push(e);"
 + "}"
 
-// filtering
+// filter logic
 + "function shouldIgnore(url){"
 + "var ignore=window.__networkIgnorePatterns||[];"
 + "var allow=window.__networkAllowPatterns||[];"
@@ -28,15 +28,17 @@ public static final String INTERCEPTOR_SCRIPT =
 + "return ignore.some(function(p){return url.includes(p);});"
 + "}"
 
-// header conversion
+// convert headers safely
 + "function headersToObject(h){"
 + "var obj={};"
++ "try{"
 + "if(!h) return obj;"
 + "if(h.forEach){"
 + "h.forEach(function(v,k){obj[k]=v});"
 + "}else{"
 + "Object.keys(h).forEach(function(k){obj[k]=h[k]});"
 + "}"
++ "}catch(e){}"
 + "return obj;"
 + "}"
 
@@ -44,8 +46,14 @@ public static final String INTERCEPTOR_SCRIPT =
 + "const originalFetch=window.fetch;"
 + "window.fetch=async function(...args){"
 
-+ "const url=args[0];"
++ "const request=args[0];"
 + "const options=args[1]||{};"
+
++ "const url=typeof request==='string'?request:request.url;"
+
++ "if(url.match(/\\.(js|css|png|jpg|svg|woff)/))"
++ "return originalFetch.apply(this,args);"
+
 + "const method=options.method||'GET';"
 + "const body=options.body||null;"
 + "const start=Date.now();"
@@ -53,7 +61,11 @@ public static final String INTERCEPTOR_SCRIPT =
 + "const resp=await originalFetch.apply(this,args);"
 
 + "const clone=resp.clone();"
-+ "const text=await clone.text();"
++ "let text=await clone.text();"
+
++ "if(text.length>500000){"
++ "text=text.substring(0,500000);"
++ "}"
 
 + "if(!shouldIgnore(url)){"
 
@@ -100,13 +112,18 @@ public static final String INTERCEPTOR_SCRIPT =
 
 + "if(!shouldIgnore(xhr._url)){"
 
++ "let respText=xhr.responseText;"
++ "if(respText && respText.length>500000){"
++ "respText=respText.substring(0,500000);"
++ "}"
+
 + "log({"
 + "url:xhr._url,"
 + "method:xhr._method,"
 + "requestHeaders:xhr._headers,"
 + "requestBody:body,"
 + "responseHeaders:{},"
-+ "responseBody:xhr.responseText,"
++ "responseBody:respText,"
 + "status:xhr.status,"
 + "startTime:start,"
 + "duration:Date.now()-start"
