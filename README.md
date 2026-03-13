@@ -4,41 +4,47 @@ A lightweight **network interception utility for Selenium (Java)** that
 captures **XHR, Fetch, and GraphQL API calls directly from the browser**
 using JavaScript injection.
 
-This tool helps automation engineers validate:
+This tool allows automation engineers to validate:
 
 -   UI action → API request payload
--   API response → UI behaviour
--   Request/response headers
+-   API response → UI behavior
+-   Request and response headers
 -   API status codes
--   Network timings
+-   Network timing
 
-It is designed to be **drop‑in compatible with existing Selenium
-frameworks** without requiring proxies or DevTools access.
+The utility is designed to be **drop‑in compatible with existing
+Selenium frameworks** and works with:
+
+-   Local WebDriver
+-   Selenium Grid
+-   Docker Selenium nodes
+-   CI/CD pipelines
 
 ------------------------------------------------------------------------
 
 # Features
 
--   Capture **XHR, Fetch, GraphQL calls**
+-   Capture **XHR, Fetch, GraphQL**
 -   Capture **request payload**
 -   Capture **request headers**
 -   Capture **response body**
 -   Capture **response headers**
 -   Capture **HTTP status**
--   Capture **network timing**
--   Wait for specific API calls
--   Search APIs using **regex**
+-   Capture **API timing**
+-   Wait for API calls
+-   Search APIs with **regex**
 -   Capture **UI action → API**
 -   Export **HAR‑like logs**
--   Optional **API filtering**
--   Validate **API response vs UI**
--   Lightweight (\~1% execution overhead)
+-   API → UI validation
+-   **Filtering support**
+-   **Grid‑safe session isolation**
+-   Lightweight (\~1% overhead)
 
 ------------------------------------------------------------------------
 
 # Project Structure
 
-Add the following files to your Selenium framework.
+Add these files to your Selenium framework.
 
     utils/
        NetworkMonitor.java
@@ -51,7 +57,7 @@ Add the following files to your Selenium framework.
 
 # 1. NetworkEvent.java
 
-Represents a captured API request and response.
+Represents a captured network request.
 
 ``` java
 public class NetworkEvent {
@@ -69,6 +75,9 @@ public class NetworkEvent {
 
     public long startTime;
     public long duration;
+
+    public String sessionId;
+
 }
 ```
 
@@ -76,15 +85,14 @@ public class NetworkEvent {
 
 # 2. NetworkScripts.java
 
-Contains the JavaScript interceptor used to capture browser network
-calls.
+Contains the JavaScript interceptor injected into the browser.
 
-Injects hooks into:
+The script hooks into:
 
--   fetch()
--   XMLHttpRequest()
+-   `fetch()`
+-   `XMLHttpRequest`
 
-and stores captured events in:
+Captured network calls are stored in:
 
     window.__networkLogs
 
@@ -92,16 +100,15 @@ and stores captured events in:
 
 # 3. NetworkMonitor.java
 
-Main utility class used by automation tests.
+Main class used by Selenium tests.
 
 Responsibilities:
 
--   inject interceptor
--   clear logs
--   search APIs
--   wait for APIs
--   capture action → API call
--   export network logs
+-   Inject interceptor
+-   Capture APIs
+-   Wait for API calls
+-   Export network logs
+-   Validate API response against UI
 
 ------------------------------------------------------------------------
 
@@ -115,19 +122,40 @@ NetworkMonitor network = new NetworkMonitor(driver);
 
 ### Step 2 --- Start monitoring
 
-Inject the interceptor.
-
 ``` java
 network.start();
 ```
 
-This must be called **after page load**.
+Must be executed **after page load**.
+
+------------------------------------------------------------------------
+
+# Selenium Grid Usage
+
+Works the same way with RemoteWebDriver.
+
+Example:
+
+``` java
+WebDriver driver = new RemoteWebDriver(
+    new URL("http://grid:4444/wd/hub"),
+    new ChromeOptions()
+);
+
+NetworkMonitor network = new NetworkMonitor(driver);
+
+network.start();
+
+network.startSession(UUID.randomUUID().toString());
+```
+
+Session IDs ensure **parallel tests don't mix network logs**.
 
 ------------------------------------------------------------------------
 
 # Capturing API Calls
 
-The simplest way to capture an API triggered by a UI action.
+Simplest usage:
 
 ``` java
 NetworkEvent api =
@@ -140,10 +168,11 @@ network.capture(
 
 Parameters:
 
-| Parameter \| Description \|
-
-\|----------\|-------------\| Runnable action \| UI action triggering
-API \| \| API pattern \| URL or regex \| \| Timeout \| seconds \|
+  Parameter     Description
+  ------------- --------------
+  Runnable      UI action
+  API pattern   URL or regex
+  timeout       seconds
 
 ------------------------------------------------------------------------
 
@@ -160,8 +189,6 @@ Assert.assertTrue(api.requestBody.contains("itemA"));
 
 # API → UI Validation
 
-Validate API response data against UI elements.
-
 ``` java
 network.assertApiMatchesUI(
     api,
@@ -170,38 +197,32 @@ network.assertApiMatchesUI(
 );
 ```
 
-This compares:
-
-    API response item count
-    vs
-    UI item count
+Compares API response items with UI elements.
 
 ------------------------------------------------------------------------
 
-# Wait For API
+# Waiting For APIs
 
 ``` java
 NetworkEvent api =
 network.waitForEvent("/checkout",10);
 ```
 
-The utility uses **adaptive polling** for faster detection.
+Uses **adaptive polling** for fast detection.
 
 ------------------------------------------------------------------------
 
 # Searching APIs
 
-Find an API call using regex.
-
 ``` java
 NetworkEvent api = network.findEvent("cart");
 ```
 
+Supports regex.
+
 ------------------------------------------------------------------------
 
 # Export Network Logs
-
-Export captured calls to file.
 
 ``` java
 network.exportLogs("network-log.json");
@@ -212,30 +233,23 @@ Example output:
     {
     "url":"/cart/add",
     "method":"POST",
-    "requestBody":"{itemId:123}",
     "status":200,
     "duration":180
     }
 
-Useful for:
-
--   debugging
--   test reports
--   troubleshooting failures
+Useful for debugging or attaching to reports.
 
 ------------------------------------------------------------------------
 
-# Filtering APIs (Optional)
+# Filtering APIs
 
-If the application sends many analytics calls, you can filter them.
-
-Ignore APIs:
+Ignore noisy APIs:
 
 ``` java
 network.ignore("analytics","metrics","datadog");
 ```
 
-Allow only certain APIs:
+Allow only specific APIs:
 
 ``` java
 network.allowOnly("/cart","/checkout","/product");
@@ -245,13 +259,13 @@ network.allowOnly("/cart","/checkout","/product");
 
 # Clearing Logs
 
-Before triggering new actions:
+Before triggering actions:
 
 ``` java
 network.flush();
 ```
 
-This prevents old calls from interfering with tests.
+Prevents old calls from interfering with tests.
 
 ------------------------------------------------------------------------
 
@@ -286,48 +300,38 @@ network.assertApiMatchesUI(
 
 Typical overhead:
 
-    ~1‑3 ms per API call
-    ~0.5‑1% total test runtime
+    ~1–3 ms per API call
+    ~1% total test runtime
 
-Much lighter than:
-
--   proxy tools
--   BrowserMob
--   external interceptors
+Much lighter than proxy‑based interception tools.
 
 ------------------------------------------------------------------------
 
 # Best Practices
 
 -   Start monitoring **after page load**
--   Flush logs before critical actions
--   Use **capture()** for clean test design
--   Export logs for debugging failures
+-   Flush logs before triggering actions
+-   Use `capture()` for clean test structure
+-   Export logs when debugging failures
 
 ------------------------------------------------------------------------
 
 # Limitations
 
--   Cannot capture APIs executed **before interceptor injection**
--   Very large responses (\>10MB) may slightly increase overhead
--   Must run in the same browser origin
+-   Cannot capture APIs triggered **before interceptor injection**
+-   Very large response bodies may increase overhead
+-   Works only within same browser origin
 
 ------------------------------------------------------------------------
 
 # Summary
 
-This utility enables powerful **UI + API validation inside Selenium
+This utility provides **powerful API validation inside Selenium UI
 tests** without requiring:
 
--   browser proxies
--   DevTools protocol
--   external network tools
+-   proxies
+-   browser devtools access
+-   external monitoring tools
 
-It provides a **simple and reliable way to validate backend behavior
-triggered by UI actions**.
-
-------------------------------------------------------------------------
-
-# Author
-
-Automation Utility for Selenium Network Validation
+It enables reliable **UI → API → UI validation** directly from your
+automation scripts.
