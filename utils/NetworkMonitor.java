@@ -16,12 +16,23 @@ public class NetworkMonitor {
         this.driver = driver;
     }
 
-    /* start monitoring */
+    /* inject interceptor */
 
     public void start(){
 
         ((JavascriptExecutor)driver)
         .executeScript(NetworkScripts.INTERCEPTOR_SCRIPT);
+
+    }
+
+    /* grid safe session */
+
+    public void startSession(String sessionId){
+
+        ((JavascriptExecutor)driver).executeScript(
+                "window.__networkSessionId=arguments[0]",
+                sessionId
+        );
 
     }
 
@@ -34,12 +45,12 @@ public class NetworkMonitor {
 
     }
 
-    /* filtering configuration */
+    /* filtering */
 
     public void allowOnly(String... patterns){
 
         ((JavascriptExecutor)driver).executeScript(
-                "window.__networkAllowPatterns=arguments[0];",
+                "window.__networkAllowPatterns=arguments[0]",
                 Arrays.asList(patterns)
         );
     }
@@ -47,12 +58,12 @@ public class NetworkMonitor {
     public void ignore(String... patterns){
 
         ((JavascriptExecutor)driver).executeScript(
-                "window.__networkIgnorePatterns=arguments[0];",
+                "window.__networkIgnorePatterns=arguments[0]",
                 Arrays.asList(patterns)
         );
     }
 
-    /* read all network events */
+    /* read events */
 
     public List<NetworkEvent> getAllEvents() throws Exception{
 
@@ -66,7 +77,7 @@ public class NetworkMonitor {
         );
     }
 
-    /* search API */
+    /* search event */
 
     public NetworkEvent findEvent(String pattern) throws Exception{
 
@@ -82,7 +93,7 @@ public class NetworkMonitor {
         return null;
     }
 
-    /* optimized wait for API */
+    /* optimized wait */
 
     public NetworkEvent waitForEvent(String pattern,int timeout) throws Exception{
 
@@ -109,7 +120,7 @@ public class NetworkMonitor {
         return null;
     }
 
-    /* capture UI action -> API */
+    /* capture action -> api */
 
     public NetworkEvent capture(Runnable action,String api,int timeout) throws Exception{
 
@@ -120,7 +131,7 @@ public class NetworkMonitor {
         return waitForEvent(api,timeout);
     }
 
-    /* export HAR-like logs */
+    /* export logs */
 
     public void exportLogs(String file) throws Exception{
 
@@ -140,10 +151,9 @@ public class NetworkMonitor {
 
         if(json==null || schema==null)
             throw new RuntimeException("Schema validation failed");
-
     }
 
-    /* API response vs UI validation */
+    /* API -> UI validation */
 
     public void assertApiMatchesUI(NetworkEvent event,
                                    List<WebElement> uiItems,
