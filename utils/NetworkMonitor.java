@@ -16,18 +16,36 @@ public class NetworkMonitor {
         this.driver = driver;
     }
 
+    /* ensure interceptor exists (auto re-inject after navigation) */
+
+    private void ensureInterceptor(){
+
+        JavascriptExecutor js = (JavascriptExecutor) driver;
+
+        Boolean installed = (Boolean) js.executeScript(
+                "return window.__networkInstalled === true"
+        );
+
+        if(installed == null || !installed){
+
+            js.executeScript(NetworkScripts.INTERCEPTOR_SCRIPT);
+
+        }
+    }
+
     /* inject interceptor */
 
     public void start(){
 
-        ((JavascriptExecutor)driver)
-        .executeScript(NetworkScripts.INTERCEPTOR_SCRIPT);
+        ensureInterceptor();
 
     }
 
     /* grid safe session */
 
     public void startSession(String sessionId){
+
+        ensureInterceptor();
 
         ((JavascriptExecutor)driver).executeScript(
                 "window.__networkSessionId=arguments[0]",
@@ -40,14 +58,18 @@ public class NetworkMonitor {
 
     public void flush(){
 
+        ensureInterceptor();
+
         ((JavascriptExecutor)driver)
-        .executeScript("window.__networkLogs=[]");
+                .executeScript("window.__networkLogs=[]");
 
     }
 
     /* filtering */
 
     public void allowOnly(String... patterns){
+
+        ensureInterceptor();
 
         ((JavascriptExecutor)driver).executeScript(
                 "window.__networkAllowPatterns=arguments[0]",
@@ -56,6 +78,8 @@ public class NetworkMonitor {
     }
 
     public void ignore(String... patterns){
+
+        ensureInterceptor();
 
         ((JavascriptExecutor)driver).executeScript(
                 "window.__networkIgnorePatterns=arguments[0]",
@@ -66,6 +90,8 @@ public class NetworkMonitor {
     /* read events */
 
     public List<NetworkEvent> getAllEvents() throws Exception{
+
+        ensureInterceptor();
 
         String json = (String)((JavascriptExecutor)driver)
                 .executeScript("return JSON.stringify(window.__networkLogs)");
@@ -100,18 +126,18 @@ public class NetworkMonitor {
         long start = System.currentTimeMillis();
         long end = start + timeout*1000;
 
-        while(System.currentTimeMillis()<end){
+        while(System.currentTimeMillis() < end){
 
             NetworkEvent e = findEvent(pattern);
 
-            if(e!=null)
+            if(e != null)
                 return e;
 
-            long elapsed = System.currentTimeMillis()-start;
+            long elapsed = System.currentTimeMillis() - start;
 
-            if(elapsed<2000)
+            if(elapsed < 2000)
                 Thread.sleep(50);
-            else if(elapsed<5000)
+            else if(elapsed < 5000)
                 Thread.sleep(150);
             else
                 Thread.sleep(300);
@@ -124,6 +150,8 @@ public class NetworkMonitor {
 
     public NetworkEvent capture(Runnable action,String api,int timeout) throws Exception{
 
+        ensureInterceptor();
+
         flush();
 
         action.run();
@@ -134,6 +162,8 @@ public class NetworkMonitor {
     /* export logs */
 
     public void exportLogs(String file) throws Exception{
+
+        ensureInterceptor();
 
         String json = (String)((JavascriptExecutor)driver)
                 .executeScript("return JSON.stringify(window.__networkLogs)");
@@ -149,7 +179,7 @@ public class NetworkMonitor {
         JsonNode schema = mapper.readTree(
                 Files.readAllBytes(Paths.get(schemaFile)));
 
-        if(json==null || schema==null)
+        if(json == null || schema == null)
             throw new RuntimeException("Schema validation failed");
     }
 
@@ -163,7 +193,7 @@ public class NetworkMonitor {
 
         JsonNode items = node.at(jsonPath);
 
-        if(items.size()!=uiItems.size()){
+        if(items.size() != uiItems.size()){
 
             throw new AssertionError(
                     "Mismatch between API items and UI elements");
