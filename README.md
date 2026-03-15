@@ -1,337 +1,391 @@
 # Selenium Network Monitor Utility
 
-A lightweight **network interception utility for Selenium (Java)** that
-captures **XHR, Fetch, and GraphQL API calls directly from the browser**
-using JavaScript injection.
+Single-file network monitor for Selenium Java frameworks.
 
-This tool allows automation engineers to validate:
+It captures browser-side `fetch` and `XMLHttpRequest` calls by injecting JavaScript, then exposes request/response details for assertions in tests.
 
--   UI action → API request payload
--   API response → UI behavior
--   Request and response headers
--   API status codes
--   Network timing
+## Why This Utility
 
-The utility is designed to be **drop‑in compatible with existing
-Selenium frameworks** and works with:
+- No CDP dependency required
+- Works with existing Selenium Java framework structure
+- One utility class: `com.networkmonitor.NetworkMonitor`
+- Suitable for local runs, Grid, and CI pipelines
 
--   Local WebDriver
--   Selenium Grid
--   Docker Selenium nodes
--   CI/CD pipelines
+## Current Structure
 
-------------------------------------------------------------------------
+```text
+src/main/java/com/networkmonitor/NetworkMonitor.java
+```
 
-# Features
+`NetworkMonitor` contains:
+- Main API (`NetworkMonitor`)
+- Inner event model (`NetworkMonitor.Event`)
+- Interceptor script constant (private)
 
--   Capture **XHR, Fetch, GraphQL**
--   Capture **request payload**
--   Capture **request headers**
--   Capture **response body**
--   Capture **response headers**
--   Capture **HTTP status**
--   Capture **API timing**
--   Wait for API calls
--   Search APIs with **regex**
--   Capture **UI action → API**
--   Export **HAR‑like logs**
--   API → UI validation
--   **Filtering support**
--   **Grid‑safe session isolation**
--   Lightweight (\~1% overhead)
+## Features
 
-------------------------------------------------------------------------
+- Capture `fetch` + `XHR` calls
+- Capture request: URL, method, headers, body
+- Capture response: status, statusText, headers (fetch), body, size, content type
+- Capture timing: start time + duration
+- Track redirects: `redirected`, `finalUrl`
+- Capture failures: network error, abort, timeout (`failed`, `errorMessage`)
+- Pattern search and waiting (`findEvent`, `findEvents`, `waitForEvent`, `waitForEvents`)
+- GraphQL helpers (`isGraphQL`, `isQuery`, `isMutation`, `getGraphQLOperationName`)
+- Error filters (`findFailedEvents`, `findClientErrors`, `findServerErrors`, `findAllErrors`, `assertNoErrors`)
+- JSON schema validation (Draft-07)
+- API -> UI assertion helpers
+- Export JSON logs and HAR 1.2
+- Basic traffic statistics
 
-# Project Structure
+## Quick Start
 
-Add these files to your Selenium framework.
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebDriver;
 
-    utils/
-       NetworkMonitor.java
-       NetworkEvent.java
+public class QuickStartExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
 
-    scripts/
-       NetworkScripts.java
+        NetworkMonitor.Event api = network.capture(
+            () -> driver.findElement(By.id("submit")).click(),
+            "/cart",
+            10
+        );
 
-------------------------------------------------------------------------
+        if (api == null) {
+            throw new AssertionError("Cart API not captured");
+        }
 
-# 1. NetworkEvent.java
-
-Represents a captured network request.
-
-``` java
-public class NetworkEvent {
-
-    public String url;
-    public String method;
-
-    public Map<String,String> requestHeaders;
-    public String requestBody;
-
-    public Map<String,String> responseHeaders;
-    public String responseBody;
-
-    public int status;
-
-    public long startTime;
-    public long duration;
-
-    public String sessionId;
-
+        System.out.println(api);
+    }
 }
 ```
 
-------------------------------------------------------------------------
+## Grid / Parallel Usage
 
-# 2. NetworkScripts.java
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
+import java.util.UUID;
 
-Contains the JavaScript interceptor injected into the browser.
-
-The script hooks into:
-
--   `fetch()`
--   `XMLHttpRequest`
-
-Captured network calls are stored in:
-
-    window.__networkLogs
-
-------------------------------------------------------------------------
-
-# 3. NetworkMonitor.java
-
-Main class used by Selenium tests.
-
-Responsibilities:
-
--   Inject interceptor
--   Capture APIs
--   Wait for API calls
--   Export network logs
--   Validate API response against UI
-
-------------------------------------------------------------------------
-
-# Setup
-
-### Step 1 --- Create NetworkMonitor
-
-``` java
-NetworkMonitor network = new NetworkMonitor(driver);
-```
-
-### Step 2 --- Start monitoring
-
-``` java
-network.start();
-```
-
-Must be executed **after page load**.
-
-------------------------------------------------------------------------
-
-# Selenium Grid Usage
-
-Works the same way with RemoteWebDriver.
-
-Example:
-
-``` java
-WebDriver driver = new RemoteWebDriver(
-    new URL("http://grid:4444/wd/hub"),
-    new ChromeOptions()
-);
-
-NetworkMonitor network = new NetworkMonitor(driver);
-
-network.start();
-
-network.startSession(UUID.randomUUID().toString());
-```
-
-Session IDs ensure **parallel tests don't mix network logs**.
-
-------------------------------------------------------------------------
-
-# Capturing API Calls
-
-Simplest usage:
-
-``` java
-NetworkEvent api =
-network.capture(
-    () -> driver.findElement(By.id("submit")).click(),
-    "/cart",
-    10
-);
-```
-
-Parameters:
-
-  Parameter     Description
-  ------------- --------------
-  Runnable      UI action
-  API pattern   URL or regex
-  timeout       seconds
-
-------------------------------------------------------------------------
-
-# Validating API Response
-
-Example:
-
-``` java
-Assert.assertEquals(api.status,200);
-Assert.assertTrue(api.requestBody.contains("itemA"));
-```
-
-------------------------------------------------------------------------
-
-# API → UI Validation
-
-``` java
-network.assertApiMatchesUI(
-    api,
-    driver.findElements(By.cssSelector(".cart-item")),
-    "/items"
-);
-```
-
-Compares API response items with UI elements.
-
-------------------------------------------------------------------------
-
-# Waiting For APIs
-
-``` java
-NetworkEvent api =
-network.waitForEvent("/checkout",10);
-```
-
-Uses **adaptive polling** for fast detection.
-
-------------------------------------------------------------------------
-
-# Searching APIs
-
-``` java
-NetworkEvent api = network.findEvent("cart");
-```
-
-Supports regex.
-
-------------------------------------------------------------------------
-
-# Export Network Logs
-
-``` java
-network.exportLogs("network-log.json");
-```
-
-Example output:
-
-    {
-    "url":"/cart/add",
-    "method":"POST",
-    "status":200,
-    "duration":180
+public class GridExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
+        network.startSession(UUID.randomUUID().toString());
     }
-
-Useful for debugging or attaching to reports.
-
-------------------------------------------------------------------------
-
-# Filtering APIs
-
-Ignore noisy APIs:
-
-``` java
-network.ignore("analytics","metrics","datadog");
+}
 ```
 
-Allow only specific APIs:
+Use `startSession` to isolate logs in parallel runs.
 
-``` java
-network.allowOnly("/cart","/checkout","/product");
+## Filtering Logic (`allowOnly` vs `ignore`)
+
+Both are supported.
+
+- `allowOnly(...)` = include-mode. Only matching URLs are captured.
+- `ignore(...)` = exclude-mode. Matching URLs are skipped.
+- Precedence: if `allowOnly` has values, it takes priority over `ignore`.
+
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
+
+public class FilterExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
+
+        // include only checkout/cart traffic
+        network.allowOnly("/checkout", "/cart");
+
+        // exclude noisy endpoints (used when allowOnly is not set)
+        network.ignore("analytics", "metrics", "datadog");
+    }
+}
 ```
 
-------------------------------------------------------------------------
+Reset filters between tests:
 
-# Clearing Logs
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
 
-Before triggering actions:
+public class ResetFiltersExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
 
-``` java
-network.flush();
+        // clear include list
+        network.allowOnly();
+
+        // clear ignore list
+        network.ignore();
+    }
+}
 ```
 
-Prevents old calls from interfering with tests.
+## Common API Methods
 
-------------------------------------------------------------------------
+### Capture and search
 
-# Example Test
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
+import java.util.List;
 
-``` java
-NetworkMonitor network = new NetworkMonitor(driver);
+public class CaptureSearchExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
 
-network.start();
-
-NetworkEvent api =
-network.capture(
-    () -> driver.findElement(By.id("submit")).click(),
-    "cart",
-    10
-);
-
-Assert.assertEquals(api.status,200);
-
-Assert.assertTrue(api.requestBody.contains("itemA"));
-
-network.assertApiMatchesUI(
-    api,
-    driver.findElements(By.cssSelector(".cart-item")),
-    "/items"
-);
+        NetworkMonitor.Event first = network.findEvent("/checkout");
+        List<NetworkMonitor.Event> all = network.findEvents("/api/.*");
+        NetworkMonitor.Event waited = network.waitForEvent("/checkout", 10);
+        List<NetworkMonitor.Event> waitedMany = network.waitForEvents("/items", 3, 15);
+    }
+}
 ```
 
-------------------------------------------------------------------------
+### Failure checks
 
-# Performance Impact
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
+import java.util.List;
 
-Typical overhead:
+public class FailureChecksExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
 
-    ~1–3 ms per API call
-    ~1% total test runtime
+        List<NetworkMonitor.Event> failed = network.findFailedEvents();
+        List<NetworkMonitor.Event> client4xx = network.findClientErrors();
+        List<NetworkMonitor.Event> server5xx = network.findServerErrors();
+        network.assertNoErrors();
+    }
+}
+```
 
-Much lighter than proxy‑based interception tools.
+### GraphQL
 
-------------------------------------------------------------------------
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
+import java.util.List;
 
-# Best Practices
+public class GraphQLExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
 
--   Start monitoring **after page load**
--   Flush logs before triggering actions
--   Use `capture()` for clean test structure
--   Export logs when debugging failures
+        NetworkMonitor.Event op = network.findGraphQLOperation("GetProducts");
+        NetworkMonitor.Event waitedOp = network.waitForGraphQLOperation("AddToCart", 10);
 
-------------------------------------------------------------------------
+        List<NetworkMonitor.Event> gqlQueries = network.findGraphQLQueries();
+        List<NetworkMonitor.Event> gqlMutations = network.findGraphQLMutations();
+    }
+}
+```
 
-# Limitations
+### Assertions
 
--   Cannot capture APIs triggered **before interceptor injection**
--   Very large response bodies may increase overhead
--   Works only within same browser origin
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
 
-------------------------------------------------------------------------
+public class AssertionsExample {
+    public void example(WebDriver driver, NetworkMonitor.Event api) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
 
-# Summary
+        network.assertRequestHeader(api, "Content-Type", "application/json");
+        network.assertResponseBodyContains(api, "/data/total", 2);
+        network.validateJsonSchema(api.responseBody, "schemas/cart-response.json");
+    }
+}
+```
 
-This utility provides **powerful API validation inside Selenium UI
-tests** without requiring:
+### API -> UI comparison
 
--   proxies
--   browser devtools access
--   external monitoring tools
+Count-only:
 
-It enables reliable **UI → API → UI validation** directly from your
-automation scripts.
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebDriver;
+
+public class ApiUiCountExample {
+    public void example(WebDriver driver, NetworkMonitor.Event api) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
+
+        network.assertApiMatchesUI(
+            api,
+            driver.findElements(By.cssSelector(".cart-item")),
+            "/items"
+        );
+    }
+}
+```
+
+Field-level:
+
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebDriver;
+
+public class ApiUiFieldExample {
+    public void example(WebDriver driver, NetworkMonitor.Event api) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
+
+        network.assertApiMatchesUI(
+            api,
+            driver.findElements(By.cssSelector(".product-name")),
+            "/data/products",
+            node -> node.get("name").asText(),
+            org.openqa.selenium.WebElement::getText
+        );
+    }
+}
+```
+
+### Export and statistics
+
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.WebDriver;
+import java.util.Map;
+
+public class ExportStatsExample {
+    public void example(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
+
+        network.exportLogs("target/network-log.json");
+        network.exportHar("target/network-log.har");
+
+        Map<String, Object> stats = network.getStatistics();
+        System.out.println(stats);
+    }
+}
+```
+
+## Event Model (`NetworkMonitor.Event`)
+
+Important fields:
+- `url`, `finalUrl`, `method`
+- `requestHeaders`, `requestBody`
+- `responseHeaders`, `responseBody`
+- `status`, `statusText`, `contentType`, `responseSize`
+- `redirected`, `failed`, `errorMessage`
+- `startTime`, `duration`, `sessionId`
+
+Convenience helpers:
+- `isSuccess()`
+- `isFailed()`
+- `isClientError()`
+- `isServerError()`
+- `isJson()`
+- `isHtml()`
+- `isGraphQL()`, `isQuery()`, `isMutation()`, `getGraphQLOperationName()`
+
+## Method Reference
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `start()` | `void` | Inject interceptor after page load |
+| `startSession(String sessionId)` | `void` | Isolate logs in parallel/grid runs |
+| `flush()` | `void` | Clear captured logs |
+| `allowOnly(String... patterns)` | `void` | Capture only matching URLs |
+| `ignore(String... patterns)` | `void` | Skip noisy URLs |
+| `getAllEvents()` | `List<NetworkMonitor.Event>` | Return all captured events |
+| `findEvent(String pattern)` | `NetworkMonitor.Event` | Return first regex match |
+| `findEvents(String pattern)` | `List<NetworkMonitor.Event>` | Return all regex matches |
+| `waitForEvent(String pattern, int timeout)` | `NetworkMonitor.Event` | Wait for one match |
+| `waitForEvents(String pattern, int expectedCount, int timeout)` | `List<NetworkMonitor.Event>` | Wait for N matches |
+| `capture(Runnable action, String pattern, int timeout)` | `NetworkMonitor.Event` | Flush + run action + wait |
+| `findGraphQLOperation(String operationName)` | `NetworkMonitor.Event` | Find GraphQL op by name |
+| `waitForGraphQLOperation(String operationName, int timeout)` | `NetworkMonitor.Event` | Wait for GraphQL op |
+| `findGraphQLQueries()` | `List<NetworkMonitor.Event>` | Return GraphQL queries |
+| `findGraphQLMutations()` | `List<NetworkMonitor.Event>` | Return GraphQL mutations |
+| `assertResponseBodyContains(Event, String, Object)` | `void` | Assert JSON pointer value |
+| `assertRequestHeader(Event, String, String)` | `void` | Assert request header value |
+| `assertResponseHeader(Event, String, String)` | `void` | Assert response header value |
+| `assertApiMatchesUI(Event, List<WebElement>, String)` | `void` | Count-only API/UI check |
+| `assertApiMatchesUI(Event, List<WebElement>, String, Function<JsonNode, String>, Function<WebElement, String>)` | `void` | Field-level API/UI check |
+| `validateJsonSchema(String response, String schemaFile)` | `void` | Validate JSON against Draft-07 schema |
+| `findFailedEvents()` | `List<NetworkMonitor.Event>` | Network failures (timeout/abort/error) |
+| `findClientErrors()` | `List<NetworkMonitor.Event>` | HTTP 4xx events |
+| `findServerErrors()` | `List<NetworkMonitor.Event>` | HTTP 5xx events |
+| `findAllErrors()` | `List<NetworkMonitor.Event>` | Combined failed + 4xx + 5xx |
+| `assertNoErrors()` | `void` | Fail test if any error event exists |
+| `exportLogs(String file)` | `void` | Export raw JSON logs |
+| `exportHar(String file)` | `void` | Export HAR 1.2 |
+| `getStatistics()` | `Map<String, Object>` | Request/response summary metrics |
+
+## Best Practices
+
+- Call `network.start()` only after the page is loaded
+- Call `network.flush()` before triggering an action manually (not needed when using `capture()`, which flushes automatically)
+- Always null-check results from `waitForEvent` / `capture`
+- Use `assertNoErrors()` after critical flows
+- Use `allowOnly(...)`/`ignore(...)` to reduce noise
+- Export HAR on failure for easier debugging
+
+## Limitations
+
+- Cannot capture requests fired before interceptor injection
+- Works at page-JS level (not full browser protocol level)
+- XHR response headers are limited by browser API access
+- Large response bodies are truncated at 500,000 characters (~488 KiB)
+- Binary responses may appear as unreadable text markers
+- GraphQL batched payload arrays are not fully interpreted
+
+## Example End-to-End Test
+
+```java
+import com.networkmonitor.NetworkMonitor;
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebDriver;
+
+public class EndToEndExample {
+    public void cartFlow(WebDriver driver) throws Exception {
+        NetworkMonitor network = new NetworkMonitor(driver);
+        network.start();
+
+        NetworkMonitor.Event api = network.capture(
+            () -> driver.findElement(By.id("submit")).click(),
+            "/cart",
+            10
+        );
+
+        if (api == null) {
+            throw new AssertionError("Expected /cart request was not captured");
+        }
+
+        if (!api.isSuccess()) {
+            throw new AssertionError("Cart API failed: " + api);
+        }
+
+        network.assertResponseBodyContains(api, "/data/totalItems", 1);
+        network.assertNoErrors();
+
+        network.exportHar("target/cart-flow.har");
+    }
+}
+```
+
+---
+
+## Developed By
+
+Built with ❤️ for Selenium automation teams.
+
+Contributions and feedback welcome.
