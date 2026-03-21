@@ -26,17 +26,23 @@ src/main/java/com/networkmonitor/NetworkMonitor.java
 
 - Capture `fetch` + `XHR` calls
 - Capture request: URL, method, headers, body
-- Capture response: status, statusText, headers (fetch), body, size, content type
+- Capture response: status, statusText, headers (`fetch` + `XHR`), body, size, content type
 - Capture timing: start time + duration
 - Track redirects: `redirected`, `finalUrl`
 - Capture failures: network error, abort, timeout (`failed`, `errorMessage`)
 - Pattern search and waiting (`findEvent`, `findEvents`, `waitForEvent`, `waitForEvents`)
 - GraphQL helpers (`isGraphQL`, `isQuery`, `isMutation`, `getGraphQLOperationName`)
 - Error filters (`findFailedEvents`, `findClientErrors`, `findServerErrors`, `findAllErrors`, `assertNoErrors`)
-- JSON schema validation (Draft-07)
+- Lightweight JSON validation (`type`, `required`, `properties`, `items`)
 - API -> UI assertion helpers
 - Export JSON logs and HAR 1.2
 - Basic traffic statistics
+- Extended request context (`mode`, `credentials`, `cache`, `redirectPolicy`, `referrer`, `keepalive`, `integrity`, `withCredentials`, `timeoutMs`)
+- Extended failure diagnostics (`errorType`, `aborted`, `timedOut`, `ok`)
+- URL decomposition (`origin`, `path`, `queryString`, `crossOrigin`)
+- Payload metadata (`requestBodySize`, `requestBodyTruncated`, `responseBodyTruncated`)
+- Best-effort performance fields (`transferSize`, `encodedBodySize`, `decodedBodySize`, `nextHopProtocol`)
+- Optional initiator stack capture (`setCaptureStacks(true)`) for debugging
 
 ## Quick Start
 
@@ -205,53 +211,48 @@ public class AssertionsExample {
 
         network.assertRequestHeader(api, "Content-Type", "application/json");
         network.assertResponseBodyContains(api, "/data/total", 2);
+
+        // Lightweight JSON validation using common schema fields
         network.validateJsonSchema(api.responseBody, "schemas/cart-response.json");
     }
 }
 ```
 
-### API -> UI comparison
-
-Count-only:
+### Capture multiple APIs from one action
 
 ```java
 import com.networkmonitor.NetworkMonitor;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 
-public class ApiUiCountExample {
-    public void example(WebDriver driver, NetworkMonitor.Event api) throws Exception {
+import java.util.List;
+
+public class MultiApiCaptureExample {
+    public void example(WebDriver driver) throws Exception {
         NetworkMonitor network = new NetworkMonitor(driver);
         network.start();
 
-        network.assertApiMatchesUI(
-            api,
-            driver.findElements(By.cssSelector(".cart-item")),
-            "/items"
+        // Same endpoint pattern, multiple calls expected
+        List<NetworkMonitor.Event> checkoutEvents = network.captureAll(
+            () -> driver.findElement(By.id("checkout")).click(),
+            "/api/checkout",
+            3,
+            15
         );
-    }
-}
-```
 
-Field-level:
-
-```java
-import com.networkmonitor.NetworkMonitor;
-import org.openqa.selenium.By;
-import org.openqa.selenium.WebDriver;
-
-public class ApiUiFieldExample {
-    public void example(WebDriver driver, NetworkMonitor.Event api) throws Exception {
-        NetworkMonitor network = new NetworkMonitor(driver);
-        network.start();
-
-        network.assertApiMatchesUI(
-            api,
-            driver.findElements(By.cssSelector(".product-name")),
-            "/data/products",
-            node -> node.get("name").asText(),
-            org.openqa.selenium.WebElement::getText
+        // Multiple endpoint patterns from one click
+        List<NetworkMonitor.Event> mixedEvents = network.captureAll(
+            () -> driver.findElement(By.id("checkout")).click(),
+            4,
+            15,
+            "/api/cart",
+            "/api/pricing",
+            "/api/inventory"
         );
+
+        if (checkoutEvents.size() < 3 || mixedEvents.size() < 4) {
+            throw new AssertionError("Expected multiple APIs were not fully captured");
+        }
     }
 }
 ```
@@ -311,6 +312,8 @@ Convenience helpers:
 | `waitForEvent(String pattern, int timeout)` | `NetworkMonitor.Event` | Wait for one match |
 | `waitForEvents(String pattern, int expectedCount, int timeout)` | `List<NetworkMonitor.Event>` | Wait for N matches |
 | `capture(Runnable action, String pattern, int timeout)` | `NetworkMonitor.Event` | Flush + run action + wait |
+| `captureAll(Runnable action, String pattern, int expectedCount, int timeout)` | `List<NetworkMonitor.Event>` | Flush + run action + wait for multiple matches |
+| `captureAll(Runnable action, int expectedCount, int timeout, String... patterns)` | `List<NetworkMonitor.Event>` | Flush + run action + wait for combined matches across multiple APIs |
 | `findGraphQLOperation(String operationName)` | `NetworkMonitor.Event` | Find GraphQL op by name |
 | `waitForGraphQLOperation(String operationName, int timeout)` | `NetworkMonitor.Event` | Wait for GraphQL op |
 | `findGraphQLQueries()` | `List<NetworkMonitor.Event>` | Return GraphQL queries |
@@ -320,7 +323,7 @@ Convenience helpers:
 | `assertResponseHeader(Event, String, String)` | `void` | Assert response header value |
 | `assertApiMatchesUI(Event, List<WebElement>, String)` | `void` | Count-only API/UI check |
 | `assertApiMatchesUI(Event, List<WebElement>, String, Function<JsonNode, String>, Function<WebElement, String>)` | `void` | Field-level API/UI check |
-| `validateJsonSchema(String response, String schemaFile)` | `void` | Validate JSON against Draft-07 schema |
+| `validateJsonSchema(String response, String schemaFile)` | `void` | Lightweight JSON validation (no external schema library) |
 | `findFailedEvents()` | `List<NetworkMonitor.Event>` | Network failures (timeout/abort/error) |
 | `findClientErrors()` | `List<NetworkMonitor.Event>` | HTTP 4xx events |
 | `findServerErrors()` | `List<NetworkMonitor.Event>` | HTTP 5xx events |
@@ -329,6 +332,7 @@ Convenience helpers:
 | `exportLogs(String file)` | `void` | Export raw JSON logs |
 | `exportHar(String file)` | `void` | Export HAR 1.2 |
 | `getStatistics()` | `Map<String, Object>` | Request/response summary metrics |
+| `setCaptureStacks(boolean enabled)` | `void` | Toggle JS initiator stack capture per event |
 
 ## Best Practices
 
@@ -343,7 +347,7 @@ Convenience helpers:
 
 - Cannot capture requests fired before interceptor injection
 - Works at page-JS level (not full browser protocol level)
-- XHR response headers are limited by browser API access
+- Browser security rules may hide some response headers for cross-origin requests
 - Large response bodies are truncated at 500,000 characters (~488 KiB)
 - Binary responses may appear as unreadable text markers
 - GraphQL batched payload arrays are not fully interpreted

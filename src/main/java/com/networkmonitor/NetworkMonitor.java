@@ -4,13 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.networknt.schema.JsonSchema;
-import com.networknt.schema.JsonSchemaFactory;
-import com.networknt.schema.SpecVersion;
-import com.networknt.schema.ValidationMessage;
 import org.openqa.selenium.*;
 
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -50,6 +45,7 @@ public class NetworkMonitor {
         + "window.__networkIgnorePatterns=[];"
         + "window.__networkAllowPatterns=[];"
         + "window.__networkSessionId=null;"
+        + "window.__networkCaptureStacks=false;"
 
         + "function log(e){"
         + "if(window.__networkSessionId) e.sessionId=window.__networkSessionId;"
@@ -57,139 +53,309 @@ public class NetworkMonitor {
         + "}"
 
         + "function shouldIgnore(url){"
+        + "var u=(url||'').toString();"
         + "var ignore=window.__networkIgnorePatterns||[];"
         + "var allow=window.__networkAllowPatterns||[];"
-        + "if(allow.length>0) return !allow.some(function(p){return url.includes(p);});"
-        + "return ignore.some(function(p){return url.includes(p);});"
+        + "if(allow.length>0) return !allow.some(function(p){return u.indexOf(p)!==-1;});"
+        + "return ignore.some(function(p){return u.indexOf(p)!==-1;});"
         + "}"
+
+        + "function normalizeMethod(m){return (m||'GET').toString().toUpperCase();}"
 
         + "function headersToObject(h){"
         + "var obj={};"
         + "try{"
         + "if(!h) return obj;"
-        + "if(h.forEach) h.forEach(function(v,k){obj[k]=v});"
-        + "else Object.keys(h).forEach(function(k){obj[k]=h[k]});"
+        + "if(h.forEach){"
+        + "h.forEach(function(v,k){obj[String(k).toLowerCase()]=String(v);});"
+        + "return obj;"
+        + "}"
+        + "if(Array.isArray(h)){"
+        + "h.forEach(function(p){if(p&&p.length>=2)obj[String(p[0]).toLowerCase()]=String(p[1]);});"
+        + "return obj;"
+        + "}"
+        + "Object.keys(h).forEach(function(k){obj[String(k).toLowerCase()]=String(h[k]);});"
         + "}catch(e){}"
+        + "return obj;"
+        + "}"
+
+        + "function parseRawHeaders(raw){"
+        + "var obj={};"
+        + "if(!raw) return obj;"
+        + "raw.split(/\\r?\\n/).forEach(function(line){"
+        + "if(!line) return;"
+        + "var i=line.indexOf(':');"
+        + "if(i<=0) return;"
+        + "var k=line.slice(0,i).trim().toLowerCase();"
+        + "var v=line.slice(i+1).trim();"
+        + "if(!k) return;"
+        + "if(obj[k]) obj[k]=obj[k]+', '+v; else obj[k]=v;"
+        + "});"
         + "return obj;"
         + "}"
 
         + "function getHeader(h,name){"
         + "if(!h) return null;"
-        + "for(var k in h){ if(k.toLowerCase()===name.toLowerCase()) return h[k]; }"
+        + "var n=(name||'').toLowerCase();"
+        + "for(var k in h){ if(k.toLowerCase()===n) return h[k]; }"
         + "return null;"
         + "}"
 
-        // FETCH interceptor with error handling & redirect tracking
+        + "function truncateText(value,max){"
+        + "var s=value===undefined||value===null?null:String(value);"
+        + "if(s===null) return {text:null,size:0,truncated:false};"
+        + "var size=s.length;"
+        + "if(size>max){"
+        + "return {text:s.substring(0,max)+'...[truncated]',size:size,truncated:true};"
+        + "}"
+        + "return {text:s,size:size,truncated:false};"
+        + "}"
+
+        + "function getUrlParts(url){"
+        + "try{"
+        + "var u=new URL(url,window.location.href);"
+        + "return {"
+        + "origin:u.origin||null,"
+        + "path:u.pathname||null,"
+        + "queryString:u.search||'',"
+        + "crossOrigin:u.origin!==window.location.origin"
+        + "};"
+        + "}catch(e){"
+        + "return {origin:null,path:null,queryString:'',crossOrigin:false};"
+        + "}"
+        + "}"
+
+        + "function getStack(){"
+        + "if(!window.__networkCaptureStacks) return null;"
+        + "try{ throw new Error('network'); }catch(e){ return e&&e.stack?String(e.stack):null; }"
+        + "}"
+
+        + "function getPerfMetrics(finalUrl){"
+        + "var out={transferSize:0,encodedBodySize:0,decodedBodySize:0,nextHopProtocol:null};"
+        + "if(!finalUrl||!window.performance||!performance.getEntriesByName) return out;"
+        + "try{"
+        + "var entries=performance.getEntriesByName(finalUrl);"
+        + "if(!entries||entries.length===0) return out;"
+        + "var p=entries[entries.length-1];"
+        + "out.transferSize=p.transferSize||0;"
+        + "out.encodedBodySize=p.encodedBodySize||0;"
+        + "out.decodedBodySize=p.decodedBodySize||0;"
+        + "out.nextHopProtocol=p.nextHopProtocol||null;"
+        + "}catch(e){}"
+        + "return out;"
+        + "}"
+
         + "const originalFetch=window.fetch;"
         + "window.fetch=async function(...args){"
         + "const request=args[0];"
         + "const options=args[1]||{};"
-        + "const url=typeof request==='string'?request:request.url;"
-        + "if(url.match(/\\.(js|css|png|jpg|svg|woff|woff2|ttf|ico|gif)$/i)) return originalFetch.apply(this,args);"
-        + "const method=options.method||'GET';"
-        + "const reqBody=options.body||null;"
+        + "const requestUrl=((typeof request==='string')?request:(request&&request.url)||'').toString();"
+        + "if(requestUrl && requestUrl.match(/\\.(js|css|png|jpg|jpeg|svg|woff|woff2|ttf|ico|gif)(\\?|$)/i)) return originalFetch.apply(this,args);"
+        + "const method=normalizeMethod(options.method || (request&&request.method));"
+        + "const reqHeaders=headersToObject(options.headers || (request&&request.headers));"
+        + "const reqBodyRaw=options.body!==undefined&&options.body!==null?options.body:(request&&request.body)||null;"
+        + "const reqBody=truncateText(reqBodyRaw,500000);"
+        + "const reqMode=(options.mode || (request&&request.mode) || null);"
+        + "const reqCredentials=(options.credentials || (request&&request.credentials) || null);"
+        + "const reqCache=(options.cache || (request&&request.cache) || null);"
+        + "const reqRedirect=(options.redirect || (request&&request.redirect) || null);"
+        + "const reqReferrer=(options.referrer || (request&&request.referrer) || null);"
+        + "const reqKeepalive=!!(options.keepalive || (request&&request.keepalive));"
+        + "const reqIntegrity=(options.integrity || (request&&request.integrity) || null);"
         + "const start=Date.now();"
         + "try{"
         + "const resp=await originalFetch.apply(this,args);"
         + "const clone=resp.clone();"
         + "let text='';"
         + "try{ text=await clone.text(); }catch(e){ text='[unreadable]'; }"
-        + "const size=text.length;"
-        + "if(text.length>500000) text=text.substring(0,500000)+'...[truncated]';"
+        + "const respBody=truncateText(text,500000);"
         + "const respHeaders=headersToObject(clone.headers);"
-        + "if(!shouldIgnore(url)){"
+        + "const finalUrl=resp.url||requestUrl||'';"
+        + "if(!shouldIgnore(finalUrl)){"
+        + "const parts=getUrlParts(finalUrl);"
+        + "const perf=getPerfMetrics(finalUrl);"
         + "log({"
-        + "url:url,"
-        + "finalUrl:resp.url,"
+        + "transport:'fetch',"
+        + "url:requestUrl||finalUrl,"
+        + "finalUrl:finalUrl,"
+        + "origin:parts.origin,"
+        + "path:parts.path,"
+        + "queryString:parts.queryString,"
+        + "crossOrigin:parts.crossOrigin,"
         + "method:method,"
-        + "requestHeaders:headersToObject(options.headers),"
-        + "requestBody:reqBody,"
+        + "mode:reqMode,"
+        + "credentials:reqCredentials,"
+        + "cache:reqCache,"
+        + "redirectPolicy:reqRedirect,"
+        + "referrer:reqReferrer,"
+        + "keepalive:reqKeepalive,"
+        + "integrity:reqIntegrity,"
+        + "withCredentials:null,"
+        + "timeoutMs:null,"
+        + "requestHeaders:reqHeaders,"
+        + "requestBody:reqBody.text,"
+        + "requestBodySize:reqBody.size,"
+        + "requestBodyTruncated:reqBody.truncated,"
         + "responseHeaders:respHeaders,"
-        + "responseBody:text,"
-        + "status:resp.status,"
-        + "statusText:resp.statusText,"
+        + "responseBody:respBody.text,"
+        + "responseBodyTruncated:respBody.truncated,"
+        + "status:resp.status||0,"
+        + "statusText:resp.statusText||'',"
+        + "ok:!!resp.ok,"
+        + "responseType:resp.type||null,"
         + "contentType:getHeader(respHeaders,'content-type'),"
-        + "responseSize:size,"
-        + "redirected:resp.redirected,"
+        + "responseSize:respBody.size,"
+        + "transferSize:perf.transferSize,"
+        + "encodedBodySize:perf.encodedBodySize,"
+        + "decodedBodySize:perf.decodedBodySize,"
+        + "nextHopProtocol:perf.nextHopProtocol,"
+        + "redirected:!!resp.redirected,"
         + "startTime:start,"
         + "duration:Date.now()-start,"
         + "failed:false,"
-        + "errorMessage:null"
+        + "errorType:null,"
+        + "aborted:false,"
+        + "timedOut:false,"
+        + "errorMessage:null,"
+        + "initiatorStack:getStack()"
         + "});}"
         + "return resp;"
         + "}catch(err){"
-        + "if(!shouldIgnore(url)){"
+        + "if(!shouldIgnore(requestUrl)){"
+        + "const parts=getUrlParts(requestUrl);"
+        + "const isAbort=!!(err&&err.name==='AbortError');"
         + "log({"
-        + "url:url,"
+        + "transport:'fetch',"
+        + "url:requestUrl||'',"
         + "finalUrl:null,"
+        + "origin:parts.origin,"
+        + "path:parts.path,"
+        + "queryString:parts.queryString,"
+        + "crossOrigin:parts.crossOrigin,"
         + "method:method,"
-        + "requestHeaders:headersToObject(options.headers),"
-        + "requestBody:reqBody,"
+        + "mode:reqMode,"
+        + "credentials:reqCredentials,"
+        + "cache:reqCache,"
+        + "redirectPolicy:reqRedirect,"
+        + "referrer:reqReferrer,"
+        + "keepalive:reqKeepalive,"
+        + "integrity:reqIntegrity,"
+        + "withCredentials:null,"
+        + "timeoutMs:null,"
+        + "requestHeaders:reqHeaders,"
+        + "requestBody:reqBody.text,"
+        + "requestBodySize:reqBody.size,"
+        + "requestBodyTruncated:reqBody.truncated,"
         + "responseHeaders:{},"
         + "responseBody:null,"
+        + "responseBodyTruncated:false,"
         + "status:0,"
         + "statusText:'Network Error',"
+        + "ok:false,"
+        + "responseType:null,"
         + "contentType:null,"
         + "responseSize:0,"
+        + "transferSize:0,"
+        + "encodedBodySize:0,"
+        + "decodedBodySize:0,"
+        + "nextHopProtocol:null,"
         + "redirected:false,"
         + "startTime:start,"
         + "duration:Date.now()-start,"
         + "failed:true,"
-        + "errorMessage:err.message||'Fetch failed'"
+        + "errorType:isAbort?'abort':'network',"
+        + "aborted:isAbort,"
+        + "timedOut:false,"
+        + "errorMessage:(err&&err.message)||'Fetch failed',"
+        + "initiatorStack:getStack()"
         + "});}"
         + "throw err;"
         + "}"
         + "};"
 
-        // XHR interceptor with error/abort/timeout handling
         + "const open=XMLHttpRequest.prototype.open;"
         + "const send=XMLHttpRequest.prototype.send;"
         + "const setHeader=XMLHttpRequest.prototype.setRequestHeader;"
 
         + "XMLHttpRequest.prototype.open=function(method,url){"
-        + "this._url=url;this._method=method;this._headers={};"
+        + "this._url=(url||'').toString();"
+        + "this._method=normalizeMethod(method);"
+        + "this._headers={};"
         + "return open.apply(this,arguments);"
         + "};"
 
         + "XMLHttpRequest.prototype.setRequestHeader=function(k,v){"
-        + "this._headers[k]=v;"
+        + "this._headers[String(k).toLowerCase()]=String(v);"
         + "return setHeader.apply(this,arguments);"
         + "};"
 
         + "XMLHttpRequest.prototype.send=function(body){"
         + "const start=Date.now();"
         + "const xhr=this;"
-        + "const reqBody=body;"
+        + "const reqBody=truncateText(body,500000);"
 
-        + "function logXhr(failed,errMsg){"
-        + "if(shouldIgnore(xhr._url)) return;"
-        + "let text='';try{text=xhr.responseText||'';}catch(e){}"
-        + "const size=text.length;"
-        + "if(text.length>500000) text=text.substring(0,500000)+'...[truncated]';"
-        + "const ct=xhr.getResponseHeader('Content-Type')||null;"
+        + "function logXhr(failed,errMsg,errorType,aborted,timedOut){"
+        + "const eventUrl=xhr._url||xhr.responseURL||'';"
+        + "if(shouldIgnore(eventUrl)) return;"
+        + "let text='';try{text=xhr.responseText||'';}catch(e){text='[unreadable]';}"
+        + "const respBody=truncateText(text,500000);"
+        + "const respHeaders=parseRawHeaders(xhr.getAllResponseHeaders());"
+        + "const ct=getHeader(respHeaders,'content-type') || xhr.getResponseHeader('Content-Type') || null;"
+        + "const parts=getUrlParts(xhr.responseURL||eventUrl);"
+        + "const perf=getPerfMetrics(xhr.responseURL||eventUrl);"
         + "log({"
-        + "url:xhr._url,"
-        + "finalUrl:xhr.responseURL||xhr._url,"
-        + "method:xhr._method,"
-        + "requestHeaders:xhr._headers,"
-        + "requestBody:reqBody,"
-        + "responseHeaders:{},"
-        + "responseBody:text,"
-        + "status:xhr.status,"
+        + "transport:'xhr',"
+        + "url:eventUrl,"
+        + "finalUrl:xhr.responseURL||eventUrl,"
+        + "origin:parts.origin,"
+        + "path:parts.path,"
+        + "queryString:parts.queryString,"
+        + "crossOrigin:parts.crossOrigin,"
+        + "method:xhr._method||'GET',"
+        + "mode:null,"
+        + "credentials:null,"
+        + "cache:null,"
+        + "redirectPolicy:null,"
+        + "referrer:null,"
+        + "keepalive:false,"
+        + "integrity:null,"
+        + "withCredentials:!!xhr.withCredentials,"
+        + "timeoutMs:xhr.timeout||0,"
+        + "requestHeaders:xhr._headers||{},"
+        + "requestBody:reqBody.text,"
+        + "requestBodySize:reqBody.size,"
+        + "requestBodyTruncated:reqBody.truncated,"
+        + "responseHeaders:respHeaders,"
+        + "responseBody:respBody.text,"
+        + "responseBodyTruncated:respBody.truncated,"
+        + "status:xhr.status||0,"
         + "statusText:xhr.statusText||'',"
+        + "ok:xhr.status>=200&&xhr.status<300,"
+        + "responseType:xhr.responseType||null,"
         + "contentType:ct,"
-        + "responseSize:size,"
-        + "redirected:!!(xhr.responseURL&&xhr.responseURL!==xhr._url),"
+        + "responseSize:respBody.size,"
+        + "transferSize:perf.transferSize,"
+        + "encodedBodySize:perf.encodedBodySize,"
+        + "decodedBodySize:perf.decodedBodySize,"
+        + "nextHopProtocol:perf.nextHopProtocol,"
+        + "redirected:!!(xhr.responseURL&&xhr._url&&xhr.responseURL!==xhr._url),"
         + "startTime:start,"
         + "duration:Date.now()-start,"
         + "failed:failed,"
-        + "errorMessage:errMsg"
+        + "errorType:errorType||null,"
+        + "aborted:!!aborted,"
+        + "timedOut:!!timedOut,"
+        + "errorMessage:errMsg||null,"
+        + "initiatorStack:getStack()"
         + "});}"
 
-        + "xhr.addEventListener('load',function(){logXhr(false,null);});"
-        + "xhr.addEventListener('error',function(){logXhr(true,'Network error');});"
-        + "xhr.addEventListener('abort',function(){logXhr(true,'Aborted');});"
-        + "xhr.addEventListener('timeout',function(){logXhr(true,'Timeout');});"
+        + "xhr.addEventListener('load',function(){"
+        + "var httpErr=xhr.status>=400;"
+        + "logXhr(httpErr,httpErr?('HTTP '+xhr.status):null,httpErr?'http':null,false,false);"
+        + "});"
+        + "xhr.addEventListener('error',function(){logXhr(true,'Network error','network',false,false);});"
+        + "xhr.addEventListener('abort',function(){logXhr(true,'Aborted','abort',true,false);});"
+        + "xhr.addEventListener('timeout',function(){logXhr(true,'Timeout','timeout',false,true);});"
 
         + "return send.apply(this,arguments);"
         + "};"
@@ -207,16 +373,43 @@ public class NetworkMonitor {
         public String finalUrl;           // URL after redirects
         public String method;
 
+        public String transport;          // fetch or xhr
+        public String origin;             // parsed URL origin
+        public String path;               // parsed URL path
+        public String queryString;        // parsed URL query string
+        public boolean crossOrigin;       // true when origin differs from page
+
+        public String mode;               // fetch mode
+        public String credentials;        // fetch credentials
+        public String cache;              // fetch cache mode
+        public String redirectPolicy;     // fetch redirect mode
+        public String referrer;           // fetch referrer
+        public boolean keepalive;         // fetch keepalive
+        public String integrity;          // fetch integrity
+
+        public Boolean withCredentials;   // xhr withCredentials
+        public Integer timeoutMs;         // xhr timeout in ms
+
         public Map<String, String> requestHeaders;
         public String requestBody;
+        public int requestBodySize;
+        public boolean requestBodyTruncated;
 
         public Map<String, String> responseHeaders;
         public String responseBody;
+        public boolean responseBodyTruncated;
 
         public int status;
         public String statusText;         // e.g., "OK", "Not Found"
+        public boolean ok;
+        public String responseType;       // fetch Response.type or xhr.responseType
         public String contentType;        // e.g., "application/json"
         public int responseSize;          // response body size in bytes
+
+        public int transferSize;
+        public int encodedBodySize;
+        public int decodedBodySize;
+        public String nextHopProtocol;
 
         public boolean redirected;        // true if request was redirected
 
@@ -224,7 +417,11 @@ public class NetworkMonitor {
         public long duration;
 
         public boolean failed;            // true if network error/abort/timeout
+        public String errorType;          // network, abort, timeout, http
+        public boolean aborted;
+        public boolean timedOut;
         public String errorMessage;       // error details when failed=true
+        public String initiatorStack;
 
         public String sessionId;
 
@@ -329,6 +526,9 @@ public class NetworkMonitor {
         @Override
         public String toString() {
             StringBuilder sb = new StringBuilder();
+            if (transport != null && !transport.isEmpty()) {
+                sb.append("[").append(transport.toUpperCase()).append("] ");
+            }
             sb.append(method).append(" ").append(url);
             sb.append(" [").append(status);
             if (statusText != null && !statusText.isEmpty()) {
@@ -339,10 +539,17 @@ public class NetworkMonitor {
                 sb.append(" (").append(responseSize).append(" bytes)");
             }
             if (redirected) {
-                sb.append(" [REDIRECTED→").append(finalUrl).append("]");
+                sb.append(" [REDIRECTED->").append(finalUrl).append("]");
             }
             if (failed) {
-                sb.append(" [FAILED: ").append(errorMessage).append("]");
+                sb.append(" [FAILED");
+                if (errorType != null) {
+                    sb.append(": ").append(errorType);
+                }
+                if (errorMessage != null && !errorMessage.isEmpty()) {
+                    sb.append(" - ").append(errorMessage);
+                }
+                sb.append("]");
             }
             return sb.toString();
         }
@@ -361,6 +568,36 @@ public class NetworkMonitor {
         @Override
         public int hashCode() {
             return Objects.hash(url, method, status, startTime);
+        }
+
+        public boolean isAbort() {
+            return aborted || "abort".equalsIgnoreCase(errorType);
+        }
+
+        public boolean isTimeout() {
+            return timedOut || "timeout".equalsIgnoreCase(errorType);
+        }
+
+        public boolean isCrossOrigin() {
+            return crossOrigin;
+        }
+
+        public boolean isOpaqueResponse() {
+            return "opaque".equalsIgnoreCase(responseType);
+        }
+
+        public boolean hasRequestBody() {
+            return requestBody != null && !requestBody.isEmpty();
+        }
+
+        public boolean isRetryCandidate() {
+            if (isAbort()) {
+                return false;
+            }
+            if (isTimeout() || "network".equalsIgnoreCase(errorType)) {
+                return true;
+            }
+            return status == 429 || isServerError();
         }
     }
 
@@ -455,7 +692,7 @@ public class NetworkMonitor {
         Pattern regex = Pattern.compile(pattern);
 
         for (Event e : getAllEvents()) {
-            if (regex.matcher(e.url).find())
+            if (e.url != null && regex.matcher(e.url).find())
                 return e;
         }
 
@@ -469,7 +706,7 @@ public class NetworkMonitor {
         List<Event> matches = new ArrayList<>();
 
         for (Event e : getAllEvents()) {
-            if (regex.matcher(e.url).find())
+            if (e.url != null && regex.matcher(e.url).find())
                 matches.add(e);
         }
 
@@ -542,6 +779,77 @@ public class NetworkMonitor {
         flush();
         action.run();
         return waitForEvent(api, timeout);
+    }
+
+    /** Flush logs, run action, wait for multiple API calls (count-based) */
+    public List<Event> captureAll(Runnable action,
+                                  String apiPattern,
+                                  int expectedCount,
+                                  int timeout) throws Exception {
+        if (expectedCount < 1) {
+            throw new IllegalArgumentException("expectedCount must be >= 1");
+        }
+
+        ensureInterceptor();
+        flush();
+        action.run();
+        return waitForEvents(apiPattern, expectedCount, timeout);
+    }
+
+    /** Flush logs, run action, then wait for combined matches across multiple API patterns */
+    public List<Event> captureAll(Runnable action,
+                                  int expectedCount,
+                                  int timeout,
+                                  String... apiPatterns) throws Exception {
+        if (expectedCount < 1) {
+            throw new IllegalArgumentException("expectedCount must be >= 1");
+        }
+        if (apiPatterns == null || apiPatterns.length == 0) {
+            throw new IllegalArgumentException("At least one API pattern is required");
+        }
+
+        List<Pattern> compiled = Arrays.stream(apiPatterns)
+                .map(Pattern::compile)
+                .collect(Collectors.toList());
+
+        ensureInterceptor();
+        flush();
+        action.run();
+
+        long start = System.currentTimeMillis();
+        long end = start + (long) timeout * 1000;
+
+        while (System.currentTimeMillis() < end) {
+            List<Event> found = getAllEvents().stream()
+                    .filter(e -> e.url != null && matchesAnyPattern(e.url, compiled))
+                    .collect(Collectors.toList());
+
+            if (found.size() >= expectedCount) {
+                return found;
+            }
+
+            long elapsed = System.currentTimeMillis() - start;
+            if (elapsed < 2000) {
+                Thread.sleep(50);
+            } else if (elapsed < 5000) {
+                Thread.sleep(150);
+            } else {
+                Thread.sleep(300);
+            }
+        }
+
+        return getAllEvents().stream()
+                .filter(e -> e.url != null && matchesAnyPattern(e.url, compiled))
+                .collect(Collectors.toList());
+    }
+
+    private boolean matchesAnyPattern(String url, List<Pattern> patterns) {
+        for (Pattern pattern : patterns) {
+            if (pattern.matcher(url).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /* ========== Status Filters ========== */
@@ -800,39 +1108,113 @@ public class NetworkMonitor {
 
     /* ========== Schema Validation ========== */
 
-    /** Validate response body against JSON Schema (Draft-07) */
+    /**
+     * Lightweight JSON validation without external schema libraries.
+     * Supports common schema keys: type, required, properties, and items.
+     */
     public void validateJsonSchema(String response, String schemaFile) throws Exception {
         JsonNode payload = mapper.readTree(response);
+        JsonNode schema = mapper.readTree(Files.readString(Paths.get(schemaFile), StandardCharsets.UTF_8));
 
-        JsonSchemaFactory factory = JsonSchemaFactory
-                .getInstance(SpecVersion.VersionFlag.V7);
-
-        Set<ValidationMessage> violations;
-
-        try (InputStream schemaStream = Files.newInputStream(Paths.get(schemaFile))) {
-            JsonSchema schema = factory.getSchema(schemaStream);
-            violations = schema.validate(payload);
-        }
+        List<String> violations = new ArrayList<>();
+        validateNode(payload, schema, "$", violations);
 
         if (!violations.isEmpty()) {
-            StringBuilder msg = new StringBuilder("Schema validation failed: ");
-            int count = 0;
-
-            for (ValidationMessage v : violations) {
-                if (count > 0)
+            StringBuilder msg = new StringBuilder("JSON validation failed: ");
+            for (int i = 0; i < violations.size() && i < 10; i++) {
+                if (i > 0) {
                     msg.append("; ");
+                }
+                msg.append(violations.get(i));
+            }
+            if (violations.size() > 10) {
+                msg.append("; ...");
+            }
+            throw new AssertionError(msg.toString());
+        }
+    }
 
-                msg.append(v.getMessage());
-                count++;
+    private void validateNode(JsonNode payload,
+                              JsonNode schema,
+                              String path,
+                              List<String> violations) {
+        if (schema == null || schema.isMissingNode() || schema.isNull()) {
+            return;
+        }
 
-                if (count >= 10) {
-                    msg.append("; ...");
-                    break;
+        JsonNode typeNode = schema.get("type");
+        if (typeNode != null && !typeNode.isNull()) {
+            String expectedType = typeNode.asText();
+            if (!matchesType(payload, expectedType)) {
+                violations.add(path + " expected type '" + expectedType + "' but found '" + actualType(payload) + "'");
+                return;
+            }
+        }
+
+        if (payload != null && payload.isObject()) {
+            JsonNode required = schema.get("required");
+            if (required != null && required.isArray()) {
+                for (JsonNode req : required) {
+                    String key = req.asText();
+                    if (!payload.has(key)) {
+                        violations.add(path + " missing required field '" + key + "'");
+                    }
                 }
             }
 
-            throw new AssertionError(msg.toString());
+            JsonNode properties = schema.get("properties");
+            if (properties != null && properties.isObject()) {
+                Iterator<Map.Entry<String, JsonNode>> fields = properties.fields();
+                while (fields.hasNext()) {
+                    Map.Entry<String, JsonNode> field = fields.next();
+                    String key = field.getKey();
+                    if (payload.has(key)) {
+                        validateNode(payload.get(key), field.getValue(), path + "/" + key, violations);
+                    }
+                }
+            }
         }
+
+        if (payload != null && payload.isArray()) {
+            JsonNode itemsSchema = schema.get("items");
+            if (itemsSchema != null && !itemsSchema.isNull()) {
+                for (int i = 0; i < payload.size(); i++) {
+                    validateNode(payload.get(i), itemsSchema, path + "/" + i, violations);
+                }
+            }
+        }
+    }
+
+    private boolean matchesType(JsonNode payload, String expectedType) {
+        switch (expectedType) {
+            case "object":
+                return payload != null && payload.isObject();
+            case "array":
+                return payload != null && payload.isArray();
+            case "string":
+                return payload != null && payload.isTextual();
+            case "integer":
+                return payload != null && payload.isIntegralNumber();
+            case "number":
+                return payload != null && payload.isNumber();
+            case "boolean":
+                return payload != null && payload.isBoolean();
+            case "null":
+                return payload == null || payload.isNull();
+            default:
+                return true;
+        }
+    }
+
+    private String actualType(JsonNode payload) {
+        if (payload == null || payload.isNull()) return "null";
+        if (payload.isObject()) return "object";
+        if (payload.isArray()) return "array";
+        if (payload.isTextual()) return "string";
+        if (payload.isIntegralNumber()) return "integer";
+        if (payload.isNumber()) return "number";
+        if (payload.isBoolean()) return "boolean";
+        return payload.getNodeType().name().toLowerCase();
     }
 
     /* ========== Assertion Helpers ========== */
@@ -945,6 +1327,15 @@ public class NetworkMonitor {
                                 + ": API='" + apiValue + "' UI='" + uiValue + "'");
             }
         }
+    }
+
+    /** Enable/disable optional JS stack capture for each network event */
+    public void setCaptureStacks(boolean enabled) {
+        ensureInterceptor();
+        ((JavascriptExecutor) driver).executeScript(
+                "window.__networkCaptureStacks=arguments[0]",
+                enabled
+        );
     }
 }
 
